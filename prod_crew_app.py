@@ -469,6 +469,12 @@ def delete_user(id):
     db.session.commit()
     return jsonify({'success': True})
 
+@app.route('/init-db')
+def run_init_db():
+    init_db()
+    return "Database initialized!"
+
+
 # Initialize database and create admin user
 def init_db():
     with app.app_context():
