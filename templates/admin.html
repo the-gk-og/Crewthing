@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Panel{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2>⚙️ Admin Panel</h2>
+    <p style="color: #666; margin-top: 0.5rem;">Manage users and system settings.</p>
+</div>
+
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+        <h3>User Management</h3>
+        <button onclick="showModal('addUserModal')" class="btn btn-success">+ Add User</button>
+    </div>
+    
+    <table>
+        <thead>
+            <tr>
+                <th>Username</th>
+                <th>Email</th>
+                <th>Admin</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for user in users %}
+            <tr>
+                <td><strong>{{ user.username }}</strong></td>
+                <td>{{ user.email or '-' }}</td>
+                <td>
+                    {% if user.is_admin %}
+                    <span style="background: #27ae60; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">Admin</span>
+                    {% else %}
+                    <span style="background: #95a5a6; color: white; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.85rem;">User</span>
+                    {% endif %}
+                </td>
+                <td>{{ user.created_at.strftime('%b %d, %Y') }}</td>
+                <td>
+                    {% if user.id != current_user.id %}
+                    <button onclick="deleteUser('{{ user.id }}')" class="btn btn-danger" style="padding: 0.5rem 1rem; font-size: 0.9rem;">Delete</button>
+                    {% else %}
+                    <span style="color: #666; font-size: 0.9rem;">Current User</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="card">
+    <h3 style="margin-bottom: 1rem;">System Information</h3>
+    <div style="background: #f8f9fa; padding: 1rem; border-radius: 6px;">
+        <p><strong>Total Users:</strong> {{ users|length }}</p>
+        <p><strong>Database:</strong> SQLite (production_crew.db)</p>
+        <p><strong>Upload Folder:</strong> ./uploads</p>
+    </div>
+</div>
+
+<!-- Add User Modal -->
+<div id="addUserModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="hideModal('addUserModal')">&times;</span>
+        <h2>Add New User</h2>
+        <form id="addUserForm">
+            <div class="form-group">
+                <label>Username *</label>
+                <input type="text" id="username" required>
+            </div>
+            <div class="form-group">
+                <label>Email (Optional - for notifications)</label>
+                <input type="email" id="email" placeholder="user@example.com">
+            </div>
+            <div class="form-group">
+                <label>Password *</label>
+                <input type="password" id="password" required>
+            </div>
+            <div class="form-group">
+                <label style="display: flex; align-items: center; gap: 0.5rem;">
+                    <input type="checkbox" id="isAdmin" style="width: auto;">
+                    <span>Grant Admin Privileges</span>
+                </label>
+            </div>
+            <button type="submit" class="btn btn-success">Create User</button>
+        </form>
+    </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('addUserForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const data = {
+        username: document.getElementById('username').value,
+        email: document.getElementById('email').value || null,
+        password: document.getElementById('password').value,
+        is_admin: document.getElementById('isAdmin').checked
+    };
+    
+    fetch('/admin/users/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    })
+    .then(r => r.json())
+    .then(result => {
+        if (result.success) {
+            location.reload();
+        } else {
+            alert('Error: ' + (result.error || 'Unknown error'));
+        }
+    });
+});
+
+function deleteUser(id) {
+    if (!confirm('Delete this user? This action cannot be undone.')) return;
+    
+    fetch(`/admin/users/delete/${id}`, {method: 'DELETE'})
+        .then(r => r.json())
+        .then(result => {
+            if (result.success) {
+                location.reload();
+            } else {
+                alert('Error: ' + (result.error || 'Unknown error'));
+            }
+        });
+}
+</script>
+{% endblock %}
