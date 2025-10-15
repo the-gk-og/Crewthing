@@ -1,20 +1,24 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_from_directory
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_from_directory, send_file
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_mail import Mail, Message
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import json
+import shutil
+import csv
+import io
+import requests
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-change-this'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///production_crew.db'
 app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-# Email configuration (optional - set to enable email notifications)
+# Email configuration
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
 app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = True
@@ -27,7 +31,6 @@ login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 mail = Mail(app)
 
-# Ensure upload folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 # Database Models
@@ -88,12 +91,17 @@ class CrewAssignment(db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
-# Helper function for sending emails
+# Template context functions
+@app.context_processor
+def inject_functions():
+    def get_user_by_username(username):
+        return User.query.filter_by(username=username).first()
+    return dict(get_user_by_username=get_user_by_username)
+
 def send_email(subject, recipient, body):
     """Send email notification if email is configured"""
     if not app.config['MAIL_USERNAME']:
-        return False  # Email not configured
-    
+        return False
     try:
         msg = Message(subject, recipients=[recipient])
         msg.body = body
@@ -102,6 +110,11 @@ def send_email(subject, recipient, body):
     except Exception as e:
         print(f"Failed to send email: {e}")
         return False
+
+def get_user_email(username):
+    """Get user email by username"""
+    user = User.query.filter_by(username=username).first()
+    return user.email if user else None
 
 # Routes
 @app.route('/')
@@ -135,12 +148,10 @@ def dashboard():
     upcoming_events = Event.query.filter(Event.event_date >= datetime.now()).order_by(Event.event_date).limit(5).all()
     return render_template('dashboard.html', upcoming_events=upcoming_events)
 
-# Equipment Management
 @app.route('/equipment')
 @login_required
 def equipment_list():
     equipment = Equipment.query.all()
-    # Convert to dict for JSON serialization in template
     equipment_dict = [{
         'id': e.id,
         'barcode': e.barcode,
@@ -227,6 +238,98 @@ def delete_equipment(id):
     db.session.delete(equipment)
     db.session.commit()
     return jsonify({'success': True})
+
+@app.route('/equipment/import-csv', methods=['POST'])
+@login_required
+def import_csv():
+    if not current_user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    try:
+        stream = io.StringIO(file.stream.read().decode('utf8'), newline=None)
+        csv_reader = csv.DictReader(stream)
+        count = 0
+        
+        for row in csv_reader:
+            barcode = row.get('barcode') or row.get('Barcode')
+            name = row.get('name') or row.get('Name')
+            
+            if not barcode or not name:
+                continue
+            
+            # Skip if barcode already exists
+            if Equipment.query.filter_by(barcode=barcode).first():
+                continue
+            
+            equipment = Equipment(
+                barcode=barcode,
+                name=name,
+                category=row.get('category') or row.get('Category') or '',
+                location=row.get('location') or row.get('Location') or '',
+                notes=row.get('notes') or row.get('Notes') or ''
+            )
+            db.session.add(equipment)
+            count += 1
+        
+        db.session.commit()
+        return jsonify({'success': True, 'imported': count})
+    except Exception as e:
+        return jsonify({'error': f'Import failed: {str(e)}'}), 400
+
+@app.route('/equipment/import-sheetdb', methods=['POST'])
+@login_required
+def import_sheetdb():
+    if not current_user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    data = request.json
+    sheet_id = data.get('sheet_id')
+    sheet_name = data.get('sheet_name', 'Sheet1')
+    
+    if not sheet_id:
+        return jsonify({'error': 'Sheet ID required'}), 400
+    
+    try:
+        # SheetDB API
+        url = f"https://api.sheetdb.io/v1/search/{sheet_id}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        rows = response.json()
+        
+        count = 0
+        for row in rows:
+            barcode = row.get('barcode') or row.get('Barcode')
+            name = row.get('name') or row.get('Name')
+            
+            if not barcode or not name:
+                continue
+            
+            if Equipment.query.filter_by(barcode=barcode).first():
+                continue
+            
+            equipment = Equipment(
+                barcode=barcode,
+                name=name,
+                category=row.get('category') or row.get('Category') or '',
+                location=row.get('location') or row.get('Location') or '',
+                notes=row.get('notes') or row.get('Notes') or ''
+            )
+            db.session.add(equipment)
+            count += 1
+        
+        db.session.commit()
+        return jsonify({'success': True, 'imported': count})
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Failed to fetch from SheetDB: {str(e)}'}), 400
+    except Exception as e:
+        return jsonify({'error': f'Import failed: {str(e)}'}), 400
 
 # Pick List Management
 @app.route('/picklist')
@@ -336,6 +439,36 @@ def calendar():
     now = datetime.now()
     return render_template('calendar.html', events=events, now=now)
 
+@app.route('/calendar/ics')
+@login_required
+def calendar_ics():
+    """Generate iCalendar format for Google Calendar subscription"""
+    events = Event.query.all()
+    
+    ical = "BEGIN:VCALENDAR\r\n"
+    ical += "VERSION:2.0\r\n"
+    ical += "PRODID:-//Production Crew//Production Crew System//EN\r\n"
+    ical += "CALSCALE:GREGORIAN\r\n"
+    ical += "METHOD:PUBLISH\r\n"
+    ical += "X-WR-CALNAME:Production Crew Events\r\n"
+    ical += "X-WR-TIMEZONE:UTC\r\n"
+    
+    for event in events:
+        ical += "BEGIN:VEVENT\r\n"
+        ical += f"UID:{event.id}@prodcrew\r\n"
+        ical += f"DTSTAMP:{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        ical += f"DTSTART:{event.event_date.strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        ical += f"DTEND:{(event.event_date + timedelta(hours=2)).strftime('%Y%m%dT%H%M%SZ')}\r\n"
+        ical += f"SUMMARY:{event.title}\r\n"
+        ical += f"DESCRIPTION:{event.description or 'Production Crew Event'}\r\n"
+        if event.location:
+            ical += f"LOCATION:{event.location}\r\n"
+        ical += "END:VEVENT\r\n"
+    
+    ical += "END:VCALENDAR\r\n"
+    
+    return ical, 200, {'Content-Type': 'text/calendar', 'Content-Disposition': 'attachment; filename="prodcrew.ics"'}
+
 @app.route('/events/add', methods=['POST'])
 @login_required
 def add_event():
@@ -355,7 +488,8 @@ def add_event():
 @login_required
 def event_detail(id):
     event = Event.query.get_or_404(id)
-    return render_template('event_detail.html', event=event)
+    all_users = User.query.all()
+    return render_template('event_detail.html', event=event, all_users=all_users)
 
 @app.route('/events/update/<int:id>', methods=['PUT'])
 @login_required
@@ -393,23 +527,36 @@ def assign_crew():
     db.session.add(assignment)
     db.session.commit()
     
-    # Send email notification if crew member has email
+    # Send email ONLY to the assigned crew member
     event = Event.query.get(data['event_id'])
+    
+    # Find user by username to get their email
     user = User.query.filter_by(username=data['crew_member']).first()
+    
     if user and user.email:
-        subject = f"Assigned to Event: {event.title}"
+        subject = f"🎭 You're assigned to: {event.title}"
         body = f"""Hello {user.username},
 
-You have been assigned to the following event:
+You have been assigned to an upcoming production event!
 
-Event: {event.title}
-Date: {event.event_date.strftime('%B %d, %Y at %I:%M %p')}
-Location: {event.location or 'TBD'}
-Role: {data.get('role', 'Crew Member')}
+📋 Event Details:
+  • Event: {event.title}
+  • Date & Time: {event.event_date.strftime('%B %d, %Y at %I:%M %p')}
+  • Location: {event.location or 'TBD'}
+  • Your Role: {data.get('role', 'Crew Member')}
 
-Please log in to the Production Crew Management System for more details.
+{f'📝 Description: {event.description}' if event.description else ''}
 
-Thanks!
+Please log in to the Production Crew Management System to view:
+  • Pick lists for items to gather
+  • Stage plans for setup
+  • Other crew members assigned to this event
+  • Event details and updates
+
+Let me know if you have any questions!
+
+Best regards,
+Production Crew System
 """
         send_email(subject, user.email, body)
     
@@ -422,6 +569,50 @@ def remove_crew(id):
     db.session.delete(assignment)
     db.session.commit()
     return jsonify({'success': True})
+
+@app.route('/crew/resend-notification', methods=['POST'])
+@login_required
+def resend_notification():
+    data = request.json
+    assignment_id = data.get('assignment_id')
+    event_id = data.get('event_id')
+    
+    assignment = CrewAssignment.query.get_or_404(assignment_id)
+    event = Event.query.get_or_404(event_id)
+    user = User.query.filter_by(username=assignment.crew_member).first()
+    
+    if not user or not user.email:
+        return jsonify({'error': 'User has no email address'}), 400
+    
+    subject = f"🎭 You're assigned to: {event.title}"
+    body = f"""Hello {user.username},
+
+You have been assigned to an upcoming production event!
+
+📋 Event Details:
+  • Event: {event.title}
+  • Date & Time: {event.event_date.strftime('%B %d, %Y at %I:%M %p')}
+  • Location: {event.location or 'TBD'}
+  • Your Role: {assignment.role or 'Crew Member'}
+
+{f'📝 Description: {event.description}' if event.description else ''}
+
+Please log in to the Production Crew Management System to view:
+  • Pick lists for items to gather
+  • Stage plans for setup
+  • Other crew members assigned to this event
+  • Event details and updates
+
+Let me know if you have any questions!
+
+Best regards,
+Production Crew System
+"""
+    
+    if send_email(subject, user.email, body):
+        return jsonify({'success': True})
+    else:
+        return jsonify({'error': 'Failed to send email'}), 500
 
 # Admin Routes
 @app.route('/admin')
@@ -469,17 +660,72 @@ def delete_user(id):
     db.session.commit()
     return jsonify({'success': True})
 
-@app.route('/init-db')
-def run_init_db():
-    init_db()
-    return "Database initialized!"
+@app.route('/admin/backup', methods=['POST'])
+@login_required
+def backup_database():
+    if not current_user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    try:
+        db_file = 'production_crew.db'
+        backup_file = f'backups/production_crew_backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}.db'
+        os.makedirs('backups', exist_ok=True)
+        shutil.copy(db_file, backup_file)
+        return jsonify({'success': True, 'file': backup_file})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
+@app.route('/admin/restore', methods=['POST'])
+@login_required
+def restore_database():
+    if not current_user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    try:
+        db.session.close()
+        file.save('production_crew_restore.db')
+        shutil.copy('production_crew_restore.db', 'production_crew.db')
+        os.remove('production_crew_restore.db')
+        return jsonify({'success': True, 'message': 'Database restored. Please refresh the page.'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-# Initialize database and create admin user
+@app.route('/admin/backups')
+@login_required
+def list_backups():
+    if not current_user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    os.makedirs('backups', exist_ok=True)
+    backups = []
+    for file in os.listdir('backups'):
+        if file.endswith('.db'):
+            path = os.path.join('backups', file)
+            backups.append({
+                'name': file,
+                'size': os.path.getsize(path),
+                'date': datetime.fromtimestamp(os.path.getmtime(path)).isoformat()
+            })
+    return jsonify(backups)
+
+@app.route('/admin/download-backup/<filename>')
+@login_required
+def download_backup(filename):
+    if not current_user.is_admin:
+        return jsonify({'error': 'Admin access required'}), 403
+    
+    return send_from_directory('backups', filename)
+
 def init_db():
     with app.app_context():
         db.create_all()
-        # Create default admin user if none exists
         if not User.query.filter_by(username='admin').first():
             admin = User(
                 username='admin',
@@ -492,4 +738,4 @@ def init_db():
 
 if __name__ == '__main__':
     init_db()
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)

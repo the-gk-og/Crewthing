@@ -3,37 +3,64 @@
 {% block title %}Calendar{% endblock %}
 
 {% block content %}
-<div class="card">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
-        <h2>📅 Event Calendar</h2>
-        <button onclick="showModal('addEventModal')" class="btn btn-success">+ Add Event</button>
+<!-- Calendar Subscription Modal -->
+<div id="subscribeModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="hideModal('subscribeModal')">&times;</span>
+        <h2><i class="fas fa-calendar-check"></i> Subscribe to Calendar</h2>
+        <p>Follow these steps to add Production Crew events to your Google Calendar:</p>
+        <div class="info-box">
+            <h4>Steps:</h4>
+            <ol>
+                <li>Click the button below to copy the calendar URL</li>
+                <li>Go to Google Calendar settings</li>
+                <li>Click "Add other calendars" → "Subscribe to calendar"</li>
+                <li>Paste the URL</li>
+                <li>Your events will now appear automatically!</li>
+            </ol>
+        </div>
+        <button onclick="subscribeCalendar()" class="btn btn-primary">
+            <i class="fas fa-copy"></i> Copy Calendar URL
+        </button>
+        <button onclick="window.open('https://calendar.google.com/calendar/u/0/r/settings/addbyurl', '_blank')" class="btn btn-success">
+            <i class="fas fa-external-link-alt"></i> Open Google Calendar
+        </button>
+        <div id="urlDisplay" class="url-display" style="display: none;"></div>
     </div>
-    
-    <div style="margin-bottom: 2rem;">
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>📅 Event Calendar</h2>
+        <div class="card-actions">
+            <button onclick="showModal('addEventModal')" class="btn btn-success"><i class="fas fa-plus"></i> Add Event</button>
+            <button onclick="showModal('subscribeModal')" class="btn btn-primary"><i class="fas fa-calendar-check"></i> Subscribe</button>
+        </div>
+    </div>
+
+    <div class="upcoming-events">
         <h3>Upcoming Events</h3>
         {% set upcoming = events|selectattr('event_date', 'ge', now)|list %}
         {% if upcoming %}
-        <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));">
+        <div class="grid">
             {% for event in upcoming|sort(attribute='event_date') %}
-            <div class="card" style="background: linear-gradient(135deg, #667eea22 0%, #764ba222 100%); border: 2px solid #667eea;">
-                <h3 style="margin-bottom: 0.5rem;">{{ event.title }}</h3>
-                <p style="color: #666; margin-bottom: 0.5rem;">
-                    📅 {{ event.event_date.strftime('%B %d, %Y at %I:%M %p') }}
-                </p>
+            <div class="card event-card">
+                <h3>{{ event.title }}</h3>
+                <p>📅 {{ event.event_date.strftime('%B %d, %Y at %I:%M %p') }}</p>
                 {% if event.location %}
-                <p style="color: #666; margin-bottom: 0.5rem;">📍 {{ event.location }}</p>
+                <p>📍 {{ event.location }}</p>
                 {% endif %}
-                <p style="color: #666; margin-bottom: 1rem;">👥 {{ event.crew_assignments|length }} crew members assigned</p>
+                <p>👥 {{ event.crew_assignments|length }} crew members assigned</p>
                 <a href="{{ url_for('event_detail', id=event.id) }}" class="btn btn-primary">View Details</a>
             </div>
             {% endfor %}
         </div>
         {% else %}
-        <p style="color: #666; padding: 2rem; text-align: center;">No upcoming events.</p>
+        <p class="empty-message">No upcoming events.</p>
         {% endif %}
     </div>
-    
-    <div>
+
+    <div class="past-events">
         <h3>Past Events</h3>
         {% set past = events|rejectattr('event_date', 'ge', now)|list %}
         {% if past %}
@@ -49,15 +76,15 @@
             </thead>
             <tbody>
                 {% for event in past|sort(attribute='event_date', reverse=True) %}
-                <tr style="opacity: 0.7;">
+                <tr class="past-event-row">
                     <td><strong>{{ event.title }}</strong></td>
                     <td>{{ event.event_date.strftime('%b %d, %Y') }}</td>
                     <td>{{ event.location or 'N/A' }}</td>
                     <td>{{ event.crew_assignments|length }}</td>
                     <td>
-                        <a href="{{ url_for('event_detail', id=event.id) }}" class="btn btn-primary" style="padding: 0.5rem 1rem; font-size: 0.9rem;">View</a>
+                        <a href="{{ url_for('event_detail', id=event.id) }}" class="btn btn-primary">View</a>
                         {% if current_user.is_admin %}
-                        <button onclick="deleteEvent('{{ event.id }}')" class="btn btn-danger" style="padding: 0.5rem 1rem; font-size: 0.9rem;">Delete</button>
+                        <button onclick="deleteEvent('{{ event.id }}')" class="btn btn-danger">Delete</button>
                         {% endif %}
                     </td>
                 </tr>
@@ -65,7 +92,7 @@
             </tbody>
         </table>
         {% else %}
-        <p style="color: #666; padding: 2rem; text-align: center;">No past events.</p>
+        <p class="empty-message">No past events.</p>
         {% endif %}
     </div>
 </div>
@@ -96,23 +123,20 @@
         </form>
     </div>
 </div>
-
 {% endblock %}
 
 {% block scripts %}
 <script>
-const now = new Date();
-
 document.getElementById('addEventForm').addEventListener('submit', function(e) {
     e.preventDefault();
-    
+
     const data = {
         title: document.getElementById('eventTitle').value,
         event_date: document.getElementById('eventDate').value,
         location: document.getElementById('eventLocation').value,
         description: document.getElementById('eventDescription').value
     };
-    
+
     fetch('/events/add', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -122,13 +146,15 @@ document.getElementById('addEventForm').addEventListener('submit', function(e) {
     .then(result => {
         if (result.success) {
             location.reload();
+        } else {
+            alert('Error adding event');
         }
     });
 });
 
 function deleteEvent(id) {
     if (!confirm('Delete this event? This will also delete all associated pick list items, stage plans, and crew assignments.')) return;
-    
+
     fetch(`/events/delete/${id}`, {method: 'DELETE'})
         .then(r => r.json())
         .then(result => {
@@ -138,6 +164,22 @@ function deleteEvent(id) {
                 alert('Error: ' + (result.error || 'Unknown error'));
             }
         });
+}
+
+function subscribeCalendar() {
+    const host = window.location.host;
+    const protocol = window.location.protocol;
+    const calendarUrl = `${protocol}//${host}/calendar/ics`;
+
+    navigator.clipboard.writeText(calendarUrl).then(() => {
+        showAlert('Calendar URL copied! Paste it in Google Calendar settings.', 'success');
+        document.getElementById('urlDisplay').textContent = calendarUrl;
+        document.getElementById('urlDisplay').style.display = 'block';
+    });
+
+    setTimeout(() => {
+        window.open('https://calendar.google.com/calendar/u/0/r/settings/addbyurl', '_blank');
+    }, 500);
 }
 </script>
 {% endblock %}

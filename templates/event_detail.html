@@ -33,16 +33,33 @@
                 <tr>
                     <th>Crew Member</th>
                     <th>Role</th>
+                    <th>Status</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {% for assignment in event.crew_assignments %}
                 <tr>
-                    <td><strong>{{ assignment.crew_member }}</strong></td>
-                    <td>{{ assignment.role or '-' }}</td>
                     <td>
-                        <button onclick="removeCrew({{ assignment.id }})" class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">Remove</button>
+                        <strong>{{ assignment.crew_member }}</strong>
+                        {% set user = get_user_by_username(assignment.crew_member) %}
+                        {% if user and user.email %}
+                        <br><small style="color: #999;"><i class="fas fa-envelope"></i> {{ user.email }}</small>
+                        {% endif %}
+                    </td>
+                    <td>{{ assignment.role or 'Crew Member' }}</td>
+                    <td>
+                        {% if user and user.email %}
+                        <span style="background: #d1fae5; color: #065f46; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem;"><i class="fas fa-check-circle"></i> Notified</span>
+                        {% else %}
+                        <span style="background: #fee2e2; color: #991b1b; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem;"><i class="fas fa-exclamation-circle"></i> No Email</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button onclick="removeCrew({{ assignment.id }})" class="btn btn-danger" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;"><i class="fas fa-trash"></i></button>
+                        {% if user and user.email %}
+                        <button onclick="resendNotification({{ assignment.id }}, '{{ assignment.crew_member }}')" class="btn btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;"><i class="fas fa-redo"></i></button>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}
@@ -127,17 +144,29 @@
 <div id="addCrewModal" class="modal">
     <div class="modal-content">
         <span class="close" onclick="hideModal('addCrewModal')">&times;</span>
-        <h2>Add Crew Member</h2>
+        <h2 style="margin-bottom: 1.5rem;"><i class="fas fa-user-plus"></i> Add Crew Member</h2>
+        
+        <div style="background: #f0f4ff; padding: 1rem; border-radius: 8px; margin-bottom: 1.5rem; border-left: 4px solid var(--primary);">
+            <strong style="color: var(--primary);">💡 Tip:</strong> Select a crew member from the list to notify them automatically via email (if they have an email address set).
+        </div>
+        
         <form id="addCrewForm">
             <div class="form-group">
-                <label>Crew Member Name *</label>
-                <input type="text" id="crewMember" required>
+                <label>Crew Member *</label>
+                <select id="crewMember" required>
+                    <option value="">-- Select a crew member --</option>
+                    {% for user in all_users %}
+                    <option value="{{ user.username }}">
+                        {{ user.username }}{% if user.email %} ({{ user.email }}){% endif %}
+                    </option>
+                    {% endfor %}
+                </select>
             </div>
             <div class="form-group">
-                <label>Role</label>
-                <input type="text" id="crewRole" placeholder="e.g., Stage Manager, Lighting Operator">
+                <label>Role / Position</label>
+                <input type="text" id="crewRole" placeholder="e.g., Stage Manager, Lighting Operator, Sound Tech">
             </div>
-            <button type="submit" class="btn btn-success">Add to Crew</button>
+            <button type="submit" class="btn btn-success" style="width: 100%;"><i class="fas fa-plus"></i> Add to Crew</button>
         </form>
     </div>
 </div>
@@ -163,7 +192,10 @@ document.getElementById('addCrewForm').addEventListener('submit', function(e) {
     .then(r => r.json())
     .then(result => {
         if (result.success) {
-            location.reload();
+            showAlert('Crew member added! Email notification sent if available.', 'success');
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            showAlert(result.error || 'Error adding crew member', 'error');
         }
     });
 });
@@ -174,8 +206,32 @@ function removeCrew(id) {
     fetch(`/crew/remove/${id}`, {method: 'DELETE'})
         .then(r => r.json())
         .then(result => {
-            if (result.success) location.reload();
+            if (result.success) {
+                showAlert('Crew member removed', 'success');
+                setTimeout(() => location.reload(), 500);
+            }
         });
+}
+
+function resendNotification(assignmentId, crewMember) {
+    if (!confirm(`Send notification email to ${crewMember}?`)) return;
+    
+    fetch('/crew/resend-notification', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            assignment_id: assignmentId,
+            event_id: {{ event.id }}
+        })
+    })
+    .then(r => r.json())
+    .then(result => {
+        if (result.success) {
+            showAlert('Notification email sent!', 'success');
+        } else {
+            showAlert(result.error || 'Failed to send notification', 'error');
+        }
+    });
 }
 </script>
 {% endblock %}

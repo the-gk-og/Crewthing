@@ -1,0 +1,9 @@
+# Ignore everything in uploads/
+uploads/**
+
+# But keep the uploads/ folder itself
+!uploads/
+!.gitkeep  # Optional: keep a placeholder file to ensure folder is tracked
+
+# Ignore the entire instance/ folder
+instance/
